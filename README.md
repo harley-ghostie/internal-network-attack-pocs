@@ -11,7 +11,8 @@ Os scripts devem ser usados somente em ambientes autorizados, laboratórios, CTF
 | Script | Objetivo | Quando usar |
 |---|---|---|
 | `ip_takeover_monitor.sh` | Configura um IP na interface VPN e monitora tráfego de rede | Usar para observar tráfego SMB, NetBIOS, DNS, HTTP e ARP em cenário controlado. |
-| `vpn_lateral_attach.sh` | Identifica hosts com SMB signing desativado e prepara validação de relay NTLM | Usar em teste autorizado de rede interna/AD para validar risco de relay NTLM. |
+| `gerar_targets_relay.sh` | Gera lista de hosts com SMB signing desativado | Usar quando o objetivo for apenas identificar alvos para validação de relay NTLM. |
+| `vpn_lateral_attach.sh` | Identifica hosts com SMB signing desativado e prepara validação de relay NTLM | Usar em teste autorizado de rede interna/AD para validar risco de relay NTLM com fluxo automatizado. |
 
 ---
 
@@ -22,12 +23,14 @@ A ordem mais lógica para utilização dos scripts é:
 ```text
 1. ip_takeover_monitor.sh
    ↓
-2. vpn_lateral_attach.sh
+2. gerar_targets_relay.sh
+   ↓
+3. vpn_lateral_attach.sh
 ```
 
 ## Explicação rápida do fluxo
 
-Primeiro, use o `ip_takeover_monitor.sh` para configurar um IP na interface VPN e observar o comportamento da rede. Depois, use o `vpn_lateral_attach.sh` quando o objetivo for identificar hosts com SMB signing desativado e validar, em ambiente autorizado, o risco de relay NTLM.
+Primeiro, use o `ip_takeover_monitor.sh` para configurar um IP na interface VPN e observar o comportamento da rede. Depois, use o `gerar_targets_relay.sh` quando quiser apenas listar hosts com SMB signing desativado. Por fim, use o `vpn_lateral_attach.sh` quando o objetivo for executar o fluxo mais completo, incluindo configuração de IP/rota, identificação de alvos, Responder, `ntlmrelayx.py` e monitoramento de tráfego.
 
 ---
 
@@ -74,7 +77,7 @@ DUMP_FILE="$LOG_DIR/tcpdump_$TARGET_IP.pcap"
 
 | Campo | Descrição |
 |---|---|
-| `TARGET_IP` | IP que será configurado na interface VPN para o cenário de monitoramento. |
+| `TARGET_IP` | IP que será configurado na interface VPN para o cenário de monitoramento. Substitua por um IP autorizado dentro da rede VPN. |
 | `NET_CIDR` | Máscara da rede em formato CIDR. Exemplo: `24`. |
 | `INTERFACE` | Interface de rede/VPN que será utilizada. Exemplo: `tun0`. |
 | `SESSION` | Nome da sessão `tmux` criada pelo script. |
@@ -84,9 +87,9 @@ DUMP_FILE="$LOG_DIR/tcpdump_$TARGET_IP.pcap"
 ### Exemplo de configuração
 
 ```bash
-IP="10.10.10.88"        # IP que será configurado na interface VPN
-CIDR="24"               # Máscara da rede
-IFACE="tun0"            # Interface VPN
+TARGET_IP="10.10.10.88"       # IP autorizado que será configurado na interface VPN
+NET_CIDR="24"                 # Máscara da rede
+INTERFACE="tun0"              # Interface VPN
 SESSION="ip_monitor"
 LOG_DIR="/tmp/ip_takeover_logs"
 DUMP_FILE="$LOG_DIR/tcpdump_$TARGET_IP.pcap"
@@ -104,6 +107,83 @@ Execute:
 
 ```bash
 ./ip_takeover_monitor.sh
+```
+
+---
+
+## gerar_targets_relay.sh
+
+### Descrição
+
+O `gerar_targets_relay.sh` é um script auxiliar para gerar uma lista de alvos SMB compatíveis com validação de relay NTLM.
+
+Ele executa uma varredura SMB na faixa de rede definida, identifica hosts com SMB signing desativado e salva os resultados no formato esperado pelo `ntlmrelayx.py`.
+
+### O que o script faz
+
+- Executa varredura SMB na rede definida;
+- Filtra hosts com `Signing: False`;
+- Formata os alvos no padrão `smb://IP`;
+- Salva a lista no arquivo definido em `TARGETS_FILE`;
+- Exibe os alvos encontrados no terminal.
+
+### Cenário de uso
+
+Use este script quando o objetivo for apenas gerar a lista de hosts com SMB signing desativado, sem iniciar automaticamente Responder, `ntlmrelayx.py` ou captura de tráfego.
+
+Ele é útil para separar a etapa de descoberta da etapa de validação, permitindo revisar os alvos antes de avançar para testes mais sensíveis.
+
+### Campos que devem ser alterados
+
+Antes de executar, revise e ajuste as variáveis no início do script:
+
+```bash
+RANGE="10.50.103.0/24"
+TARGETS_FILE="/tmp/relay_targets.txt"
+```
+
+### Explicação dos campos
+
+| Campo | Descrição |
+|---|---|
+| `RANGE` | Faixa de rede interna autorizada para varredura SMB. |
+| `TARGETS_FILE` | Caminho do arquivo onde serão salvos os hosts com SMB signing desativado. |
+
+### Exemplo de configuração
+
+```bash
+RANGE="10.10.10.0/24"                 # Faixa de rede autorizada no teste
+TARGETS_FILE="/tmp/relay_targets.txt" # Arquivo de saída para uso com ntlmrelayx.py
+```
+
+### Como usar
+
+Dê permissão de execução:
+
+```bash
+chmod +x gerar_targets_relay.sh
+```
+
+Execute:
+
+```bash
+./gerar_targets_relay.sh
+```
+
+### Saída esperada
+
+O script gera um arquivo com alvos no seguinte formato:
+
+```text
+smb://10.10.10.15
+smb://10.10.10.22
+smb://10.10.10.30
+```
+
+Esse arquivo pode ser usado posteriormente com o `ntlmrelayx.py`:
+
+```bash
+sudo python3 /usr/share/doc/python3-impacket/examples/ntlmrelayx.py -tf /tmp/relay_targets.txt
 ```
 
 ---
@@ -140,10 +220,10 @@ Ele é indicado para demonstrar que a ausência de SMB signing pode expor sistem
 Antes de executar, revise e ajuste as variáveis no início do script:
 
 ```bash
-IP="10.50.103.88" # Substituir pelo IP autorizado da VPN
-CIDR="24"
-IFACE="tun0"
-RELAY_USER="backdooruser" #USUARIO_AUTORIZADO
+IP="10.50.103.88"          # Substituir pelo IP autorizado da VPN
+CIDR="24"                  # Máscara da rede
+IFACE="tun0"               # Interface VPN
+RELAY_USER="usuario_autorizado"
 TARGETS="/tmp/relay_targets.txt"
 SESSION="vpn_attack"
 ```
@@ -313,7 +393,7 @@ Valide primeiro:
 crackmapexec --help
 ```
 
-Caso não esteja instalado, use o método compatível com o seu ambiente. Em Kali, a instalação pode variar conforme a versão do sistema e os pacotes disponíveis.
+Caso não esteja instalado, use o método compatível com o seu ambiente.
 
 ---
 
@@ -353,6 +433,7 @@ Aplique permissão nos scripts:
 
 ```bash
 chmod +x ip_takeover_monitor.sh
+chmod +x gerar_targets_relay.sh
 chmod +x vpn_lateral_attach.sh
 ```
 
@@ -408,11 +489,17 @@ sudo python3 /usr/share/doc/python3-impacket/examples/ntlmrelayx.py -tf $TARGETS
 
 Confirme a faixa de rede liberada no escopo do teste.
 
+No `gerar_targets_relay.sh`, ajuste:
+
+```bash
+RANGE="10.10.10.0/24"
+```
+
 No `vpn_lateral_attach.sh`, ajuste:
 
 ```bash
 sudo ip route add 10.10.10.0/24 dev $IFACE
-sudo crackmapexec smb 10.10.88.0/24 > /tmp/cme_scan.txt
+sudo crackmapexec smb 10.10.10.0/24 > /tmp/cme_scan.txt
 ```
 
 No `ip_takeover_monitor.sh`, ajuste:
